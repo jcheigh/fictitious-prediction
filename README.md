@@ -1,2 +1,2 @@
-# fict_pred_pipeline
+# Fictitious Prediction Pipeline
 Empirical pipeline for fictitious prediction
