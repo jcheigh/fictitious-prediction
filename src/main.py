@@ -1,163 +1,145 @@
 import os 
-import numpy as np
-from scipy.stats import beta, dirichlet
-import matplotlib.pyplot as plt
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import accuracy_score
-from sklearn.ensemble import RandomForestClassifier
-import seaborn as sns
+import csv
+import json
+from tqdm import tqdm
 
-POP_SIZE = 2000
-TIMESTEPS = 75
-VOCAB_SIZE = 150
-SPEECH_LEN = 200
-ALPHA      = 3
-BETA       = 3 # 3,3 bc we believe most r around .5 
-ALPHA_B  = 2
-SEED       = 10
+import numpy as np
+from scipy.stats import beta
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import GradientBoostingClassifier
+
+SRC_PATH      = os.getcwd()
+MAIN_PATH     = os.path.dirname(SRC_PATH)               
+DATA_PATH     = f"{MAIN_PATH}/data"
+CSV_FPATH     = f'{DATA_PATH}/results.csv'
+SEED          = 10
 
 np.random.seed(SEED)
+class Experiment:
 
-def get_beta_params(rho, alpha=ALPHA_B):
-    """
-    Generates a 2xT matrix for Beta parameters given a numpy vector rho.
+    def __init__(self, **kwargs):
+        self.id         = 1
+        self.pop_size   = 2000
+        self.vocab_size = 150
+        self.speech_len = 200
+        self.timesteps  = 50
+        self.alpha      = 3
+        self.beta       = 3
+        self.a_mult     = 2
+        self.strength   = 2
 
-    :param rho: A numpy array of length T.
-    :param mult: A multiplier for the parameters.
-    :return: A 2xT numpy matrix.
+        self.num_folds  = 5
+        self.model      = GradientBoostingClassifier()
+        self.param_grid = {}
+        self.scoring    = 'neg_log_loss' # or f1, neg_log_loss
 
-    beta = (1-rho)/rho to ensure mean of dirichlet distribution is rho
-    """
+        self.vocab      = beta.rvs(1.5, 1.5, size=self.vocab_size)
+        self.rhos       = beta.rvs(self.alpha, self.beta, size=self.timesteps)
 
-    alphas = np.full(len(rho), alpha)
-    betas  = alpha * (np.ones(len(rho)) - rho) / rho
-    
-    return alphas, betas
+        self.headers    = ['id', 'pop_size', 'vocab_size', 
+                        'speech_len', 'alpha', 'beta', 
+                        'a_mult', 'strength', 'num_folds',
+                        'model', 'param_grid', 'scoring', 'rho', 'score'
+                        ]
 
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
-def create_dirichlet_vector(polarization, vocab, base_alpha=1.0, influence=2):
-    """
-    Creates a vector of parameters for a Dirichlet distribution based on a person's polarization (p)
-    and the polarization of each word (word_map). The resulting vector can be used to sample from
-    a Dirichlet distribution in a way that words more similar in polarization to p are more likely to be chosen.
+    def get_phi(self, polarity):
+        distances = np.abs(np.array(self.vocab) - polarity)
+        # Invert the distances to get raw probabilities (closer means higher probability)
+        raw_probabilities = 1 - distances
+        raw_probabilities = np.power(raw_probabilities, self.strength)
+        probabilities = raw_probabilities / raw_probabilities.sum()
 
-    Parameters:
-    - p (float): The polarization of the person.
-    - word_map (list of float): List of polarization values for each word.
-    - base_alpha (float): Base value for Dirichlet parameters, representing the minimum amount of "pseudo-counts".
-    - influence (float): Factor to amplify the effect of similarity between word polarization and p.
-
-    Returns:
-    - dirichlet_params (list of float): Parameters for the Dirichlet distribution.
-    """
-    # Calculate similarity between p and each word's polarization
-    similarities = [1 - abs(polarization - wp) for wp in vocab]
-
-    # Scale and add base_alpha to similarities to form Dirichlet parameters
-    dirichlet_params = [base_alpha + influence * sim for sim in similarities]
-
-    return dirichlet_params
-
-
-class Population:
-
-    def __init__(self, individuals, timestep):
-        self.individuals = individuals 
-        self.timestep = timestep
-        self.accuracy = self.train()
+        return probabilities
 
     def get_data(self):
-        X = []
-        y = []
+        data = []
+        alphas = np.full(len(self.rhos), self.a_mult)
+        betas  = self.a_mult * (np.ones(len(self.rhos)) - self.rhos) / self.rhos
+        for t in range(self.timesteps):
+            X = np.zeros((self.pop_size, self.vocab_size))
+            y = np.zeros(self.pop_size)
+            a = alphas[t]
+            b = betas[t]
 
-        for individual in self.individuals:
-            X.append(individual.speech)
-            y.append(individual.party)
-
-        return np.array(X), np.array(y)
-    
-    def train(self, model=None, param_grid={}):
-        if model is None:
-            model = RandomForestClassifier()
-            param_grid = { 'n_estimators': [10, 50, 100], 'max_depth': [5, 10, 15] }
-
-        X, y = self.get_data()
-        #grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy')
-        #grid_search.fit(X, y)
-        #best_accuracy = grid_search.best_score_
-        #return best_accuracy
-        grid_search = GridSearchCV(model, param_grid, cv=5, scoring='neg_log_loss')
-
-        # Fit the model
-        grid_search.fit(X, y)
-
-        # Get the best cross-entropy score (note: it's negative)
-        best_cross_entropy = grid_search.best_score_
-
-        # Saving the best score in the class instance
-
-        # Return the best cross-entropy score
-        # Note: Return the negative of best_score_ to get positive cross-entropy value
-        return -best_cross_entropy
-
-class Individual:
-
-    def __init__(self, id, polarity, party, speech):
-        self.id = id
-        self.polarity = polarity
-        self.party = party
-        self.speech = speech 
-
-class Data:
-    
-    def __init__(self, population_map, rhos):
-        self.population_map = population_map
-        self.rhos = rhos
-
-    def plot(self):
-        accuracies = [pop.accuracy for pop in self.population_map.values()]
-        rhos = self.rhos
-
-        # Ensure the lengths of rhos and accuracies are the same
-        if len(rhos) != len(accuracies):
-            raise ValueError("Length of rhos and accuracies must be the same.")
-
-        # Plotting
-        plt.figure(figsize=(10, 6))
-        sns.scatterplot(x=rhos, y=accuracies)
-        plt.xlabel('Rhos')
-        plt.ylabel('Accuracy')
-        plt.title('Accuracy vs Rhos')
-        plt.show()
-    
-def main():
-    rhos = beta.rvs(ALPHA,BETA, size=TIMESTEPS)
-    alphas, betas = get_beta_params(rhos)
-    vocab = beta.rvs(1.5, 1.5, size=VOCAB_SIZE)
-
-    population_map = {}
-    for timestep in range(TIMESTEPS):
-        individuals = []
-        alpha_t, beta_t = alphas[timestep], betas[timestep]
-
-        for ind in range(POP_SIZE):
-            ind_polar = beta.rvs(alpha_t, beta_t)
-            ind_party = 1 if ind_polar >= .5 else 0
-            dir_vec = create_dirichlet_vector(ind_polar, vocab) # maybe fucked
-            phi = dirichlet(dir_vec).rvs()
-            speech =  np.random.multinomial(SPEECH_LEN, phi[0], size=1)
-            individual = Individual(
-                id = ind,
-                polarity = ind_polar, 
-                party = ind_party, 
-                speech = speech[0] 
-                )
-            individuals.append(individual)
+            for ind in range(self.pop_size):
+                polar  = beta.rvs(a, b)
+                y[ind] = 1 if polar >= .5 else 0
+                phi    = self.get_phi(polar)
+                X[ind] = np.random.multinomial(self.speech_len, phi)
+            
+            data.append((X,y))
         
-        population = Population(individuals, timestep)
-        population_map[timestep] = population
-    
-    data = Data(population_map, rhos)
-    data.plot()
+        return data
 
-main()
+    def train(self):
+        scores = []
+        data = self.get_data()
+        for X, y in tqdm(data):
+            grid_search = GridSearchCV(self.model, self.param_grid, cv=self.num_folds, scoring=self.scoring)
+            grid_search.fit(X, y)
+            scores.append((abs(grid_search.best_score_)))
+    
+        return scores
+
+    def get_next_id(self):
+        if not os.path.isfile(CSV_FPATH):
+            return 1
+
+        ids = []
+        with open(CSV_FPATH, 'r', newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                ids.append(int(row['id']))
+
+        return max(ids) + 1 if ids else 1
+
+    def get_rows(self, scores):
+        rows = []
+        for t, score in enumerate(scores):
+            data = [
+                self.id, self.pop_size, self.vocab_size, self.speech_len,
+                self.alpha, self.beta, self.a_mult, self.strength, self.num_folds, 
+                self.model, self.param_grid, self.scoring, self.rhos[t], score
+                ]
+
+            data_row = dict(zip(self.headers, data))
+            rows.append(data_row)
+        return rows
+
+    def write(self, data_rows):
+        for data_row in data_rows:
+            if 'param_grid' in data_row and isinstance(data_row['param_grid'], dict):
+                    data_row['param_grid'] = json.dumps(data_row['param_grid'])
+
+            file_exists = os.path.isfile(CSV_FPATH)
+            correct_headers = False
+
+            if file_exists:
+                with open(CSV_FPATH, 'r', newline='') as csvfile:
+                    reader = csv.reader(csvfile)
+                    current_headers = next(reader, None)
+                    correct_headers = current_headers == self.headers
+
+            # Open the file in append mode if it exists and has correct headers, otherwise write mode
+            with open(CSV_FPATH, 'a' if file_exists and correct_headers else 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.headers)
+
+                # Write the header if the file is new or headers are incorrect
+                if not file_exists or not correct_headers:
+                    writer.writeheader()
+
+                writer.writerow(data_row)
+
+    def run(self):
+        self.id  = self.get_next_id()
+        scores    = self.train()
+        data_rows = self.get_rows(scores)
+        self.write(data_rows)
+
+   
+if __name__ == '__main__':
+    experiment = Experiment()
+    experiment.run()
