@@ -7,6 +7,7 @@ import numpy as np
 from scipy.stats import beta
 from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.neighbors import KNeighborsClassifier
 
 SRC_PATH      = os.getcwd()
 MAIN_PATH     = os.path.dirname(SRC_PATH)               
@@ -19,10 +20,10 @@ class Experiment:
 
     def __init__(self, **kwargs):
         self.id         = 1
-        self.pop_size   = 2000
-        self.vocab_size = 150
-        self.speech_len = 200
-        self.timesteps  = 50
+        self.pop_size   = 1000
+        self.vocab_size = 10
+        self.speech_len = 15
+        self.timesteps  = 3000
         self.alpha      = 3
         self.beta       = 3
         self.a_mult     = 2
@@ -31,7 +32,7 @@ class Experiment:
         self.num_folds  = 5
         self.model      = GradientBoostingClassifier()
         self.param_grid = {}
-        self.scoring    = 'neg_log_loss' # or f1, neg_log_loss
+        self.scoring    = 'neg_log_loss' # or accuracy, f1, neg_log_loss
 
         self.vocab      = beta.rvs(1.5, 1.5, size=self.vocab_size)
         self.rhos       = beta.rvs(self.alpha, self.beta, size=self.timesteps)
@@ -78,35 +79,38 @@ class Experiment:
         scores = []
         data = self.get_data()
         for X, y in tqdm(data):
-            grid_search = GridSearchCV(self.model, self.param_grid, cv=self.num_folds, scoring=self.scoring)
-            grid_search.fit(X, y)
-            scores.append((abs(grid_search.best_score_)))
+            try:
+                grid_search = GridSearchCV(self.model, self.param_grid, cv=self.num_folds, scoring=self.scoring)
+                grid_search.fit(X, y)
+                scores.append((abs(grid_search.best_score_)))
+            except ValueError as e:
+                scores.append(-1)
+                print(f"Skipping an iteration due to an error: {e}")
+                continue
     
         return scores
 
     def get_next_id(self):
         if not os.path.isfile(CSV_FPATH):
             return 1
-
-        ids = []
+            
         with open(CSV_FPATH, 'r', newline='') as csvfile:
             reader = csv.DictReader(csvfile)
-            for row in reader:
-                ids.append(int(row['id']))
-
-        return max(ids) + 1 if ids else 1
+            last_row = list(reader)[-1]
+            return int(last_row['id']) + 1
 
     def get_rows(self, scores):
         rows = []
         for t, score in enumerate(scores):
-            data = [
-                self.id, self.pop_size, self.vocab_size, self.speech_len,
-                self.alpha, self.beta, self.a_mult, self.strength, self.num_folds, 
-                self.model, self.param_grid, self.scoring, self.rhos[t], score
-                ]
+            if score != -1: # error in training 
+                data = [
+                    self.id, self.pop_size, self.vocab_size, self.speech_len,
+                    self.alpha, self.beta, self.a_mult, self.strength, self.num_folds, 
+                    self.model, self.param_grid, self.scoring, self.rhos[t], score
+                    ]
 
-            data_row = dict(zip(self.headers, data))
-            rows.append(data_row)
+                data_row = dict(zip(self.headers, data))
+                rows.append(data_row)
         return rows
 
     def write(self, data_rows):
@@ -141,5 +145,6 @@ class Experiment:
 
    
 if __name__ == '__main__':
-    experiment = Experiment()
+    kwargs = {'speech_len' : 150}
+    experiment = Experiment(**kwargs)
     experiment.run()
