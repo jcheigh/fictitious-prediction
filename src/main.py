@@ -19,6 +19,9 @@ SEED          = 10
 np.random.seed(SEED)
 
 def train_pair(args):
+    """
+    Helper used below. Here for multiprocessing
+    """
     X, y, model, param_grid, num_folds, scoring = args
     if len(np.unique(y)) <= 1:
         print("Skipping due to insufficient class variety in y.")
@@ -63,6 +66,7 @@ class Experiment:
         self.rhos       = .5 + (.5 - self.epsilon) * beta.rvs(self.alpha, self.beta, size=self.timesteps)
             
     def get_data(self):
+        print("Beginning Data Generation")
         alphas = np.full(self.timesteps, self.a_mult)
         betas = self.a_mult * (1 - self.rhos) / self.rhos
         polar = beta.rvs(alphas[:, np.newaxis], betas[:, np.newaxis], size=(self.timesteps, self.pop_size))
@@ -88,6 +92,7 @@ class Experiment:
 
     def train(self):
         data = self.get_data()
+        print('Beginning Training')
         args = [(X, y, self.model, self.param_grid, self.num_folds, self.scoring) for X, y in data]
 
         with multiprocessing.Pool(self.num_cpus) as pool:
@@ -148,16 +153,16 @@ class Experiment:
                 writer.writerow(data_row)
 
     def run(self):
+        print(f'Beginning Experiment...')
         self.id  = self.get_next_id()
         scores    = self.train()
         data_rows = self.get_rows(scores)
         self.write(data_rows)
+        print(f"Experiment Complete\n {'=' * 20}\n")
 
-def get_sh_script(kwargs):
-    num_workers = kwargs.get('num_cpus', 28)
-    kwargs_json = json.dumps(kwargs).replace('"', '\\"')  # ensure proper escaping of quotes in JSON
+def get_sh_script(kwargs_lst):
     script_content = f"""#!/bin/sh
-#SBATCH -c {num_workers}                # Request {num_workers} CPU core
+#SBATCH -c {kwargs_lst[0].get('num_cpus', 28)}                # Request CPUs as per first kwargs
 #SBATCH -t 0-10:00          # Runtime in D-HH:MM, minimum of 10 minutes
 #SBATCH -p dl               # Partition to submit to
 #SBATCH --mem=10G           # Request 10G of memory
@@ -166,15 +171,24 @@ def get_sh_script(kwargs):
 #SBATCH --gres=gpu:0        # Request 0 GPU (change as needed)
 
 export PYTHONPATH="{SRC_PATH}:$PYTHONPATH"
-python -c "from main import Experiment; experiment = Experiment(**{kwargs_json}); experiment.run()"
+
+python -c 'from main import Experiment; kwargs_lst = {json.dumps(kwargs_lst)}; [Experiment(**kwargs).run() for kwargs in kwargs_lst]'
 """
 
     with open(f'{DATA_PATH}/run.sh', 'w') as file:
         file.write(script_content)
 
 if __name__ == '__main__':
-    kwargs = {'pop_size' : 10000, 'scoring' : 'accuracy'}
-    get_sh_script(kwargs)
+    kwargs_lst = [
+        {'pop_size' : 50},
+        {'pop_size' : 300},
+        {'pop_size' : 750},
+        {'pop_size' : 2500},
+        {'pop_size' : 4000},
+        {'pop_size' : 6000},
+        {'pop_size' : 8500},
+        {'pop_size' : 12500}
+    ]
+    get_sh_script(kwargs_lst)
 
-    # exp = Experiment(**kwargs)
-    # exp.run()
+    
