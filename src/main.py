@@ -20,7 +20,7 @@ np.random.seed(SEED)
 
 def train_pair(args):
     """
-    Helper used below. Here for multiprocessing
+    Helper used below. Here for multiprocessing. Returns mean cv score 
     """
     X, y, model, param_grid, num_folds, scoring = args
     if len(np.unique(y)) <= 1:
@@ -29,7 +29,7 @@ def train_pair(args):
     try:
         grid_search = GridSearchCV(model, param_grid, cv=num_folds, scoring=scoring)
         grid_search.fit(X, y)
-        return abs(grid_search.best_score_)
+        return grid_search.best_score_
     except ValueError as e:
         print(f"Skipping due to an error: {e}")
         return -1
