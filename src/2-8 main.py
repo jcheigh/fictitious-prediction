@@ -6,39 +6,52 @@ import multiprocessing
 
 import numpy as np
 from scipy.stats import beta
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.neighbors import KNeighborsClassifier
-import matplotlib.pyplot as plt
-import seaborn as sns 
+from sklearn.model_selection import GridSearchCV
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import make_scorer, log_loss, f1_score, accuracy_score
 
 SRC_PATH      = os.getcwd()
 MAIN_PATH     = os.path.dirname(SRC_PATH)               
 DATA_PATH     = f"{MAIN_PATH}/data"
-CSV_FPATH     = f'{DATA_PATH}/results.csv'
+CSV_FPATH     = f'{DATA_PATH}/new_results.csv'
 SEED          = 10
 
-#np.random.seed(SEED)
+np.random.seed(SEED)
 
 def train_pair(args):
     """
     Helper used below. Here for multiprocessing. Returns mean cv score 
     """
-    X, y, model, param_grid, num_folds, scoring = args
+    X, y, model, param_grid, num_folds, scoring, calibrate, cal_method= args
     if len(np.unique(y)) <= 1:
         print("Skipping due to insufficient class variety in y.")
         return -1
     try:
-        grid_search = GridSearchCV(model, param_grid, cv=num_folds, scoring=scoring)
-        grid_search.fit(X, y)
-        best_model = grid_search.best_estimator_  # Get the best model
-        prob = best_model.predict_proba(X)  # Predict on X using the best model
-        pred = best_model.predict(X)
-        return prob, pred
+        if not calibrate:
+            grid_search = GridSearchCV(model, param_grid, cv=num_folds, scoring=scoring)
+            grid_search.fit(X, y)
+            return grid_search.best_score_
+        else:
+            scoring_functions = {
+                'neg_log_loss' : make_scorer(log_loss, greater_is_better=False, needs_proba=True),
+                'f1'           : 'f1',
+                'accuracy'     : 'accuracy'
+                }
+
+            cv_splitter = StratifiedKFold(n_splits=num_folds, shuffle=True)
+            calibrated_model = CalibratedClassifierCV(estimator=model, method=cal_method, cv=cv_splitter)
+            calibrated_model.fit(X, y)
+            score_func = scoring_functions.get(scoring, 'accuracy') 
+            scores = cross_val_score(calibrated_model, X, y, cv=cv_splitter, scoring=score_func)
+            return scores.mean()
+            
     except ValueError as e:
         print(f"Skipping due to an error: {e}")
         return -1
-
+   
 class Experiment:
 
     def __init__(self, **kwargs):
@@ -46,42 +59,49 @@ class Experiment:
         self.pop_size   = 1000
         self.lex_size   = 10
         self.speech_len = 15
-        self.timesteps  = 2
+        self.timesteps  = 1500
+        self.left_prop  = 0.5
         self.alpha      = 3
         self.beta       = 3
-        self.a_mult     = 2
-        self.strength   = 2
         self.epsilon    = 0.05
         self.num_cpus   = 28
         self.num_folds  = 5
         self.model      = GradientBoostingClassifier()
         self.param_grid = {}
+        self.calibrate  = True
+        self.cal_method = 'sigmoid' # or isotonic
         self.scoring    = 'neg_log_loss' # or accuracy, f1, neg_log_loss
 
         self.headers    = ['id', 'pop_size', 'lex_size', 'vocab_size', 'epsilon',
-                        'speech_len', 'alpha', 'beta', 
-                        'a_mult', 'strength', 'num_folds',
-                        'model', 'param_grid', 'scoring', 'rho', 'score'
+                        'speech_len', 'alpha', 'beta', 'left_prop', 'num_folds',
+                        'model', 'param_grid', 'scoring', 'calibrate', 'cal_method',
+                        'rho', 'score'
                         ]
 
         for key, value in kwargs.items():
             setattr(self, key, value)
 
         self.vocab_size = self.lex_size * 3
-        self.rhos       = .5 + (.5 - self.epsilon) * beta.rvs(self.alpha, self.beta, size=self.timesteps)
+        self.rhos       = np.random.uniform(0.5, .95, size=self.timesteps)
             
     def get_data(self):
         print("Beginning Data Generation")
-        alphas = np.full(self.timesteps, self.a_mult)
-        betas = self.a_mult * (1 - self.rhos) / self.rhos
-        polar = beta.rvs(alphas[:, np.newaxis], betas[:, np.newaxis], size=(self.timesteps, self.pop_size))
+        sigmas = (.373 * (self.rhos ** 3) - .76 * (self.rhos ** 2) + .3876 * self.rhos)
+        alphas = self.rhos * ((self.rhos * (1 - self.rhos)) / sigmas - 1)
+        betas = (1 - self.rhos) * ((self.rhos * (1 - self.rhos)) / sigmas - 1)
+        n_left = int(self.left_prop * self.pop_size)
+        n_right = self.pop_size - n_left
+
+        polar_left = np.array([beta.rvs(alphas[t], betas[t], size=n_left) for t in range(self.timesteps)])
+        polar_right = np.array([beta.rvs(betas[t], alphas[t], size=n_right) for t in range(self.timesteps)])
+        polar = np.concatenate([polar_left, polar_right], axis=1)
+        
+        np.random.shuffle(polar.T)  
         y = (polar >= 0.5).astype(int)
 
-        r = self.rhos[:, np.newaxis, np.newaxis]  
-        polar_expanded = polar[:, :, np.newaxis]  
-
-        left_prob    = (polar_expanded * (1 - r - self.epsilon) + (1 - polar_expanded) * r) / self.lex_size
-        right_prob   = (polar_expanded * r + (1 - r - self.epsilon) * (1 - polar_expanded)) / self.lex_size
+        polar_expanded = polar[:, :, np.newaxis]
+        left_prob = (1 - self.epsilon) * (1 - polar_expanded) / self.lex_size
+        right_prob = (1 - self.epsilon) * polar_expanded / self.lex_size
         neutral_prob = np.full(left_prob.shape, self.epsilon / self.lex_size)
 
         phi = np.concatenate([np.repeat(left_prob, self.lex_size, axis=2),
@@ -96,11 +116,14 @@ class Experiment:
         return data
 
     def train(self):
-        data = self.get_data()[0]
-        X, y = data
-        print('Beginning training')
-        prob, pred = train_pair((X,y, self.model, self.param_grid, self.num_folds, self.scoring))
-        return prob, pred, y
+        data = self.get_data()
+        print('Beginning Training')
+        args = [(X, y, self.model, self.param_grid, self.num_folds, self.scoring, self.calibrate, self.cal_method) for X, y in data]
+
+        with multiprocessing.Pool(self.num_cpus) as pool:
+            scores = list(tqdm(pool.imap(train_pair, args), total=len(args)))
+
+        return scores
 
     def get_next_id(self):
         if not os.path.isfile(CSV_FPATH):
@@ -123,8 +146,8 @@ class Experiment:
                 data = [
                     self.id, self.pop_size, self.lex_size, self.vocab_size, 
                     self.epsilon, self.speech_len, self.alpha, self.beta, 
-                    self.a_mult, self.strength, self.num_folds, 
-                    self.model, self.param_grid, self.scoring, self.rhos[t], score
+                    self.left_prop, self.num_folds, self.model, self.param_grid, 
+                    self.scoring, self.calibrate, self.cal_method, self.rhos[t], score
                     ]
                 data_row = dict(zip(self.headers, data))
                 rows.append(data_row)
@@ -156,11 +179,11 @@ class Experiment:
 
     def run(self):
         print(f'Beginning Experiment...')
-        #self.id  = self.get_next_id()
-        pred    = self.train()
-        #data_rows = self.get_rows(scores)
-        #self.write(data_rows)
-        #print(f"Experiment Complete\n {'=' * 20}\n")
+        self.id  = self.get_next_id()
+        scores    = self.train()
+        data_rows = self.get_rows(scores)
+        self.write(data_rows)
+        print(f"Experiment Complete\n {'=' * 20}\n")
 
 def get_sh_script(kwargs_lst):
     script_content = f"""#!/bin/sh
@@ -174,14 +197,21 @@ def get_sh_script(kwargs_lst):
 
 export PYTHONPATH="{SRC_PATH}:$PYTHONPATH"
 
-python -c 'from main import Experiment; kwargs_lst = {json.dumps(kwargs_lst)}; [Experiment(**kwargs).run() for kwargs in kwargs_lst]'
+python -c 'from new_main import Experiment; kwargs_lst = {json.dumps(kwargs_lst)}; [Experiment(**kwargs).run() for kwargs in kwargs_lst]'
 """
 
     with open(f'{DATA_PATH}/run.sh', 'w') as file:
         file.write(script_content)
 
 if __name__ == '__main__':
-    exp = Experiment()
-    prob, pred, y = exp.train()
-    p1 = np.array([p[0] for p in prob])
-    np.savetxt(f"{DATA_PATH}/data.txt", p1, delimiter="\n")
+    kwargs_lst = [
+        {'pop_size' : 5000, 'scoring' : 'neg_log_loss'},
+        {'pop_size' : 5000, 'scoring' : 'accuracy'},
+        {'pop_size' : 5000, 'scoring' : 'neg_log_loss', 'cal_method' : 'isotonic'},
+        {'pop_size' : 5000, 'scoring' : 'accuracy', 'cal_method' : 'isotonic'},
+        {'pop_size' : 5000, 'scoring' : 'neg_log_loss', 'calibrate' : "False"},
+        {'pop_size' : 5000, 'scoring' : 'accuracy', 'calibrate' : "False"},
+    ]
+    get_sh_script(kwargs_lst)
+
+    

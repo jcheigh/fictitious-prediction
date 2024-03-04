@@ -9,4 +9,4 @@
 
 export PYTHONPATH="/mnt/storage/jcheigh/fictitious-prediction/src:$PYTHONPATH"
 
-python -c 'from main import Experiment; kwargs_lst = [{"pop_size": 50, "num_cpus": 20}, {"pop_size": 300, "num_cpus": 20}, {"pop_size": 750, "num_cpus": 20}, {"pop_size": 2500, "num_cpus": 20}, {"pop_size": 4000, "num_cpus": 20}, {"pop_size": 6000, "num_cpus": 20}, {"pop_size": 8500, "num_cpus": 20}, {"pop_size": 12500, "num_cpus": 20}]; [Experiment(**kwargs).run() for kwargs in kwargs_lst]'
+python -c 'from new_main import Experiment; kwargs_lst = [{"pop_size": 5000, "scoring": "neg_log_loss"}, {"pop_size": 5000, "scoring": "accuracy"}, {"pop_size": 5000, "scoring": "neg_log_loss", "cal_method": "isotonic"}, {"pop_size": 5000, "scoring": "accuracy", "cal_method": "isotonic"}, {"pop_size": 5000, "scoring": "neg_log_loss", "calibrate": "False"}, {"pop_size": 5000, "scoring": "accuracy", "calibrate": "False"}]; [Experiment(**kwargs).run() for kwargs in kwargs_lst]'
