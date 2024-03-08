@@ -1,0 +1,25 @@
+{
+    "alpha0": 0.08775614202022552,
+    "beta0": 0.08775614202022552,
+    "W0": [
+        -0.03705202415585518,
+        2.045285940170288,
+        1.025600552558899
+    ],
+    "num_epochs": 500,
+    "batch_size": 100,
+    "approx_size": 100,
+    "grid_size": 200,
+    "optimizer": "Adam (\nParameter Group 0\n    amsgrad: False\n    betas: (0.9, 0.999)\n    capturable: False\n    differentiable: False\n    eps: 1e-08\n    foreach: None\n    fused: None\n    lr: 0.001\n    maximize: False\n    weight_decay: 0\n)",
+    "delta": 1e-05,
+    "final_alpha": 0.08775614202022552,
+    "final_beta": 0.08775614202022552,
+    "final_W": [
+        -0.03705202415585518,
+        2.045285940170288,
+        1.025600552558899
+    ],
+    "true_alpha": 12.673684210526261,
+    "true_beta": 3.1684210526315644,
+    "true_rho": 0.8
+}
